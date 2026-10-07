@@ -13,4 +13,4 @@ python -m nltk.downloader punkt_tab
 cd ../frontend
 npm install
 npm run build
-echo "Setup complete. Run the database script (README step 2), then: cd backend && source venv/bin/activate && python start.py"
+echo "Setup complete. Run the database script (README step 2), then: source backend/venv/bin/activate && python start.py"

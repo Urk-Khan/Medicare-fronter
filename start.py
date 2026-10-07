@@ -11,7 +11,8 @@ Then open the dashboard at the https://....trycloudflare.com address it prints
 
 Options:
   python start.py --no-tunnel     use PUBLIC_BASE_URL from .env as-is (real server)
-  python start.py --port 8000
+  python start.py --host 0.0.0.0  bind address (default: 0.0.0.0)
+  python start.py --port 8000     port (default: 8000)
 """
 
 import argparse
@@ -23,9 +24,26 @@ import sys
 import time
 from pathlib import Path
 
-HERE = Path(__file__).resolve().parent
-os.chdir(HERE)
-sys.path.insert(0, str(HERE))
+ROOT_DIR = Path(__file__).resolve().parent
+BACKEND_DIR = ROOT_DIR / "backend" if (ROOT_DIR / "backend").is_dir() else ROOT_DIR
+
+# Auto-re-execute using venv Python if running with unactivated system Python
+if sys.prefix == getattr(sys, "base_prefix", sys.prefix):
+    for candidate in (
+        BACKEND_DIR / "venv" / "Scripts" / "python.exe",
+        ROOT_DIR / "venv" / "Scripts" / "python.exe",
+        BACKEND_DIR / "venv" / "bin" / "python",
+        ROOT_DIR / "venv" / "bin" / "python",
+    ):
+        if candidate.is_file():
+            sys.exit(subprocess.call([str(candidate), str(Path(__file__).resolve())] + sys.argv[1:]))
+
+# Run from BACKEND_DIR and ensure both directories are on sys.path
+os.chdir(BACKEND_DIR)
+if str(BACKEND_DIR) not in sys.path:
+    sys.path.insert(0, str(BACKEND_DIR))
+if str(ROOT_DIR) not in sys.path:
+    sys.path.insert(0, str(ROOT_DIR))
 
 # Force IPv4 resolution (prevents Windows IPv6 handshake timeouts) — Ashad fix.
 _orig_getaddrinfo = socket.getaddrinfo
@@ -40,14 +58,37 @@ socket.getaddrinfo = _ipv4_getaddrinfo
 if sys.platform == "win32":
     sys.stdout.reconfigure(encoding="utf-8", errors="replace")
 
-import requests  # noqa: E402
-from dotenv import dotenv_values  # noqa: E402
+try:
+    import requests
+    from dotenv import dotenv_values
+except ImportError as e:
+    print(f"[!] Missing required dependency: {e.name}")
+    print("[!] Please activate your virtual environment or install dependencies:")
+    print("      pip install -r backend/requirements.txt")
+    sys.exit(1)
 
-ENV = dotenv_values(HERE / ".env")
+# Check for .env in root or backend; root overrides backend if both are present
+ENV: dict = {}
+if (BACKEND_DIR / ".env").is_file():
+    ENV.update(dotenv_values(BACKEND_DIR / ".env"))
+if (ROOT_DIR / ".env").is_file():
+    ENV.update(dotenv_values(ROOT_DIR / ".env"))
+
+# Export to os.environ so settings/config picks them up
+for k, v in ENV.items():
+    if k not in os.environ and v is not None:
+        os.environ[k] = v
 
 
 def find_cloudflared() -> str:
-    for candidate in (HERE / "cloudflared.exe", HERE / "cloudflared", HERE.parent / "cloudflared.exe"):
+    candidates = (
+        ROOT_DIR / "cloudflared.exe",
+        ROOT_DIR / "cloudflared",
+        BACKEND_DIR / "cloudflared.exe",
+        BACKEND_DIR / "cloudflared",
+        ROOT_DIR.parent / "cloudflared.exe",
+    )
+    for candidate in candidates:
         if candidate.is_file():
             return str(candidate)
     return "cloudflared"
@@ -60,7 +101,7 @@ def start_tunnel(port: int):
         proc = subprocess.Popen([exe, "tunnel", "--url", f"http://localhost:{port}"], stdout=subprocess.PIPE,
                                 stderr=subprocess.STDOUT, text=True, encoding="utf-8", errors="replace", bufsize=1)
     except FileNotFoundError:
-        print("[!] cloudflared was not found. Put cloudflared.exe in the backend folder or install it.")
+        print("[!] cloudflared was not found. Put cloudflared.exe in the project folder or install it.")
         sys.exit(1)
     pattern = re.compile(r"https://[a-zA-Z0-9-]+\.trycloudflare\.com")
     deadline = time.time() + 30
@@ -78,7 +119,8 @@ def start_tunnel(port: int):
 
 
 def point_telnyx_at(public_url: str) -> None:
-    key, app_id = ENV.get("TELNYX_API_KEY"), ENV.get("TELNYX_CONNECTION_ID")
+    key = os.environ.get("TELNYX_API_KEY") or ENV.get("TELNYX_API_KEY")
+    app_id = os.environ.get("TELNYX_CONNECTION_ID") or ENV.get("TELNYX_CONNECTION_ID")
     if not key or not app_id:
         print("[!] TELNYX_API_KEY / TELNYX_CONNECTION_ID missing in .env — skipping webhook update.")
         return
@@ -101,9 +143,10 @@ def point_telnyx_at(public_url: str) -> None:
 
 
 def main() -> None:
-    parser = argparse.ArgumentParser()
-    parser.add_argument("--no-tunnel", action="store_true")
-    parser.add_argument("--port", type=int, default=8000)
+    parser = argparse.ArgumentParser(description="Medicare VoiceOps Launcher")
+    parser.add_argument("--no-tunnel", action="store_true", help="use PUBLIC_BASE_URL from .env as-is (real server)")
+    parser.add_argument("--host", type=str, default="0.0.0.0", help="host address to bind (default: 0.0.0.0)")
+    parser.add_argument("--port", type=int, default=8000, help="port to bind (default: 8000)")
     args = parser.parse_args()
 
     print("=" * 64)
@@ -112,30 +155,41 @@ def main() -> None:
 
     tunnel = None
     if args.no_tunnel:
-        public_url = (ENV.get("PUBLIC_BASE_URL") or "").rstrip("/")
+        public_url = (os.environ.get("PUBLIC_BASE_URL") or ENV.get("PUBLIC_BASE_URL") or "").rstrip("/")
         if not public_url.startswith("https://"):
-            print("[!] --no-tunnel needs PUBLIC_BASE_URL=https://... in .env")
+            print("[!] --no-tunnel needs PUBLIC_BASE_URL=https://... in .env or environment")
             sys.exit(1)
     else:
         public_url, tunnel = start_tunnel(args.port)
         point_telnyx_at(public_url)
     os.environ["PUBLIC_BASE_URL"] = public_url
 
-    if not (HERE.parent / "frontend" / "dist" / "index.html").is_file():
+    dist_candidates = (
+        ROOT_DIR / "frontend" / "dist" / "index.html",
+        BACKEND_DIR.parent / "frontend" / "dist" / "index.html",
+    )
+    if not any(d.is_file() for d in dist_candidates):
         print("[i] Dashboard not built yet — run 'npm install' then 'npm run build' in the frontend folder.")
+
+    caller_id = os.environ.get("TELNYX_FROM_NUMBER") or ENV.get("TELNYX_FROM_NUMBER", "(not set)")
 
     print("=" * 64)
     print(f"  Dashboard (anywhere):     {public_url}")
-    print(f"  Dashboard (this PC):      http://localhost:{args.port}")
-    print(f"  Calls go out from:        {ENV.get('TELNYX_FROM_NUMBER', '(not set)')}")
+    print(f"  Dashboard (this machine): http://localhost:{args.port}")
+    print(f"  Calls go out from:        {caller_id}")
     print("  Press Ctrl+C to stop.")
     print("=" * 64)
 
-    import uvicorn
+    try:
+        import uvicorn
+    except ImportError:
+        print("[!] uvicorn is not installed. Install requirements with:")
+        print("      pip install -r backend/requirements.txt")
+        sys.exit(1)
 
     try:
-        uvicorn.run("app.main:app", host="0.0.0.0", port=args.port, log_level="info", proxy_headers=True,
-                    forwarded_allow_ips="*")
+        uvicorn.run("app.main:app", host=args.host, port=args.port, app_dir=str(BACKEND_DIR), log_level="info",
+                    proxy_headers=True, forwarded_allow_ips="*")
     finally:
         if tunnel:
             print("[*] Closing tunnel...")

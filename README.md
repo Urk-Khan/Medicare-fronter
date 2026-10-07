@@ -173,8 +173,8 @@ the opening line and disclaimer on the AI Agents page.
 ## For developers
 
 ```
+start.py                   tunnel + Telnyx webhook + server launcher
 backend/
-  start.py                 tunnel + Telnyx webhook + server launcher
   app/main.py              FastAPI app (API, webhooks, media WebSocket, serves dashboard)
   app/voice/bot.py         Pipecat pipeline (Ashad structure: Cartesia STT/TTS + OpenAI/Anthropic)
   app/voice/guards.py      never speaks leaked tool-call text; disclaimer can't be interrupted
