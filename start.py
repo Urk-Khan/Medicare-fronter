@@ -156,11 +156,34 @@ def main() -> None:
 
     tunnel = None
     if args.no_tunnel:
-        public_url = (os.environ.get("PUBLIC_BASE_URL") or ENV.get("PUBLIC_BASE_URL") or "").rstrip("/")
-        if not public_url.startswith("https://"):
-            print("[!] --no-tunnel needs PUBLIC_BASE_URL=https://... in .env or environment")
-            sys.exit(1)
-        point_telnyx_at(public_url)
+        # Detect PUBLIC_BASE_URL from env, with fallbacks to Coolify automatic FQDN variables
+        coolify_fqdn = os.environ.get("COOLIFY_FQDN") or os.environ.get("FQDN") or os.environ.get("COOLIFY_URL")
+        public_url = (
+            os.environ.get("PUBLIC_BASE_URL")
+            or ENV.get("PUBLIC_BASE_URL")
+            or coolify_fqdn
+            or ""
+        ).rstrip("/")
+
+        # Auto-prepend https:// if scheme is missing
+        if public_url and not public_url.startswith(("http://", "https://")):
+            public_url = f"https://{public_url}"
+
+        if not public_url:
+            print("[!] Warning: PUBLIC_BASE_URL is not set in Coolify environment variables.")
+            print("[!] Telnyx webhooks require a public https:// URL to receive calls.")
+            print(f"[!] Defaulting to http://localhost:{args.port} for dashboard access.")
+            public_url = f"http://localhost:{args.port}"
+        elif not public_url.startswith("https://"):
+            print(f"[!] Warning: PUBLIC_BASE_URL is '{public_url}' (not https://).")
+            print("[!] Telnyx webhooks may fail to deliver unless a secure https:// address is used.")
+        else:
+            print(f"[OK] Public base URL: {public_url}")
+
+        if public_url.startswith("https://"):
+            point_telnyx_at(public_url)
+        else:
+            print("[i] Skipping automatic Telnyx webhook update (requires https://).")
     else:
         public_url, tunnel = start_tunnel(args.port)
         point_telnyx_at(public_url)
