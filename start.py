@@ -143,10 +143,11 @@ def point_telnyx_at(public_url: str) -> None:
 
 
 def main() -> None:
+    default_port = int(os.environ.get("PORT", 8000))
     parser = argparse.ArgumentParser(description="Medicare VoiceOps Launcher")
     parser.add_argument("--no-tunnel", action="store_true", help="use PUBLIC_BASE_URL from .env as-is (real server)")
     parser.add_argument("--host", type=str, default="0.0.0.0", help="host address to bind (default: 0.0.0.0)")
-    parser.add_argument("--port", type=int, default=8000, help="port to bind (default: 8000)")
+    parser.add_argument("--port", type=int, default=default_port, help=f"port to bind (default: {default_port})")
     args = parser.parse_args()
 
     print("=" * 64)
@@ -159,6 +160,7 @@ def main() -> None:
         if not public_url.startswith("https://"):
             print("[!] --no-tunnel needs PUBLIC_BASE_URL=https://... in .env or environment")
             sys.exit(1)
+        point_telnyx_at(public_url)
     else:
         public_url, tunnel = start_tunnel(args.port)
         point_telnyx_at(public_url)
